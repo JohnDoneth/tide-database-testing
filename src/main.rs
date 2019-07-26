@@ -2,7 +2,7 @@
 #![deny(warnings)]
 
 use serde::{Deserialize, Serialize};
-use tide::{error::ResultExt, response, App, Context, EndpointResult};
+use tide::{response, App, Context, EndpointResult};
 
 use tokio::net::TcpStream;
 use tokio::sync::lock::{Lock, LockGuard};
@@ -10,9 +10,9 @@ use tokio::sync::lock::{Lock, LockGuard};
 use tokio_postgres::tls::{NoTls, NoTlsStream};
 use tokio_postgres::{Client, Config, Connection, Error};
 
-use std::time::Instant;
 use std::pin::Pin;
 use std::sync::Arc;
+use std::time::Instant;
 
 use futures::{Future, FutureExt, Poll, StreamExt};
 
@@ -21,20 +21,17 @@ struct Message {
     contents: String,
 }
 
-async fn echo_json(mut cx: Context<State>) -> EndpointResult {
-    let msg: Message = cx.body_json().await.client_err()?;
-    println!("JSON: {:?}", msg);
-    Ok(response::json(msg))
-}
-
 async fn get_json(cx: Context<State>) -> EndpointResult {
-    let start = Instant::now();
     let cx = cx.state();
 
     let mut result = {
+        let start = Instant::now();
         let mut client = cx.pool.get().await;
+        println!("time elapsed waiting for lock: {:?}", start.elapsed());
 
+        let start = Instant::now();
         let select = client.prepare("SELECT now()::TEXT").await.unwrap();
+        println!("time elapsed preparing query: {:?}", start.elapsed());
 
         let res = client.query(&select, &[]).await.unwrap();
 
@@ -43,7 +40,6 @@ async fn get_json(cx: Context<State>) -> EndpointResult {
 
         res
     };
-    println!("elapsed waiting for lock: {:?}", start.elapsed());
 
     let start = Instant::now();
     let res = if let Some(Ok(next)) = result.next().await {
@@ -53,9 +49,7 @@ async fn get_json(cx: Context<State>) -> EndpointResult {
     };
     println!("elapsed waiting for query: {:?}", start.elapsed());
 
-    let message = Message {
-        contents: res,
-    };
+    let message = Message { contents: res };
 
     //println!("{:?}", message);
 
@@ -89,8 +83,9 @@ impl Future for GetConnectionFuture {
     type Output = LockGuard<Client>;
 
     fn poll(self: Pin<&mut Self>, cx: &mut std::task::Context) -> Poll<Self::Output> {
-        for connection in self.pool.connections.iter() {
-            if let Poll::Ready(val) = connection.clone().poll_lock(cx) {
+        for mut connection in self.pool.connections.iter().cloned() {
+            if let Poll::Ready(val) = connection.poll_lock(cx) {
+                println!("ready");
                 return Poll::Ready(val);
             }
         }
@@ -105,7 +100,7 @@ impl Pool {
     async fn new() -> Self {
         let mut connections = Vec::new();
 
-        for _ in 0..10usize {
+        for _ in 0..4usize {
             connections.push(Lock::new(connect("user=postgres").await));
         }
 
@@ -123,21 +118,15 @@ struct State {
     pool: Pool,
 }
 
-fn main() {
-    let rt = tokio::runtime::Runtime::new().unwrap();
+#[tokio::main]
+async fn main() -> Result<(), Box<dyn std::error::Error>> {
+    let pool = Pool::new().await;
 
-    println!("starting");
+    let mut app = App::with_state(State { pool });
 
-    rt.block_on(async move {
-        let mut client = connect("user=postgres").await;
-        let _select = client.prepare("SELECT now()::TEXT").await.unwrap();
+    app.at("/json").get(get_json);
 
-        let pool = Pool::new().await;
+    app.run("127.0.0.1:8000")?;
 
-        let mut app = App::with_state(State { pool });
-
-        app.at("/json").post(echo_json).get(get_json);
-
-        app.run("127.0.0.1:8000").unwrap();
-    });
+    Ok(())
 }
