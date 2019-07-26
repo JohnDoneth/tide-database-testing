@@ -26,7 +26,9 @@ async fn get_json(cx: Context<State>) -> EndpointResult {
 
     let mut result = {
         let start = Instant::now();
+        //println!("waiting for lock");
         let mut client = cx.pool.get().await;
+        println!("lock acquired");
         println!("time elapsed waiting for lock: {:?}", start.elapsed());
 
         let start = Instant::now();
@@ -36,7 +38,7 @@ async fn get_json(cx: Context<State>) -> EndpointResult {
         let res = client.query(&select, &[]).await.unwrap();
 
         drop(client);
-        println!("dropped lock");
+        println!("dropped lock guard");
 
         res
     };
@@ -89,6 +91,8 @@ impl Future for GetConnectionFuture {
                 return Poll::Ready(val);
             }
         }
+
+        //println!("pending {:?}", std::time::Instant::now());
 
         Poll::Pending
     }
