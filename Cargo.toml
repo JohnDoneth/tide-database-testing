@@ -1,0 +1,25 @@
+[package]
+name = "async-tide-database-testing"
+version = "0.1.0"
+authors = ["John C. Doneth <doneth7@gmail.com>"]
+edition = "2018"
+
+[dependencies]
+futures-preview = "0.3.0-alpha.17"
+
+pretty_env_logger = "0.3"
+
+#hyper = { git = "https://github.com/hyperium/hyper.git" }
+
+tide = { git = "https://github.com/rustasync/tide.git" }
+
+serde = "1.0"
+serde_derive = "1.0"
+serde_json = "1.0"
+
+tokio = { git = "https://github.com/tokio-rs/tokio" }
+tokio-fs = { git = "https://github.com/tokio-rs/tokio" }
+tokio-postgres = { git = "https://github.com/sfackler/rust-postgres.git", branch = "std-futures", features = ["runtime"] }
+
+[patch.crates-io]
+http-service = { git = "https://github.com/rustasync/http-service.git" }
