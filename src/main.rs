@@ -11,7 +11,6 @@ use tokio_postgres::tls::{NoTls, NoTlsStream};
 use tokio_postgres::{Client, Config, Connection, Error};
 
 use std::pin::Pin;
-use std::sync::Arc;
 use std::time::Instant;
 
 use futures::{Future, FutureExt, Poll, StreamExt};
@@ -26,30 +25,25 @@ async fn get_json(cx: Context<State>) -> EndpointResult {
 
     let mut result = {
         let start = Instant::now();
-        //println!("waiting for lock");
         let mut client = cx.pool.get().await;
-        println!("lock acquired");
         println!("time elapsed waiting for lock: {:?}", start.elapsed());
 
-        let start = Instant::now();
+        //let start = Instant::now();
         let select = client.prepare("SELECT now()::TEXT").await.unwrap();
-        println!("time elapsed preparing query: {:?}", start.elapsed());
+        //println!("time elapsed preparing query: {:?}", start.elapsed());
 
         let res = client.query(&select, &[]).await.unwrap();
-
-        drop(client);
-        println!("dropped lock guard");
 
         res
     };
 
-    let start = Instant::now();
+    //let start = Instant::now();
     let res = if let Some(Ok(next)) = result.next().await {
         next.get::<_, &str>(0).to_string()
     } else {
         "failed to query".to_string()
     };
-    println!("elapsed waiting for query: {:?}", start.elapsed());
+    //println!("elapsed waiting for query: {:?}", start.elapsed());
 
     let message = Message { contents: res };
 
@@ -73,48 +67,45 @@ async fn connect(s: &str) -> Client {
     client
 }
 
+#[derive(Clone)]
 struct SharedPool {
     connections: Vec<Lock<Client>>,
 }
 
-struct GetConnectionFuture {
-    pool: Arc<SharedPool>,
-}
+#[derive(Clone)]
+struct GetConnectionFuture(SharedPool);
 
 impl Future for GetConnectionFuture {
     type Output = LockGuard<Client>;
 
-    fn poll(self: Pin<&mut Self>, cx: &mut std::task::Context) -> Poll<Self::Output> {
-        for mut connection in self.pool.connections.iter().cloned() {
+    fn poll(mut self: Pin<&mut Self>, cx: &mut std::task::Context) -> Poll<Self::Output> {
+        for connection in self.0.connections.iter_mut() {
             if let Poll::Ready(val) = connection.poll_lock(cx) {
-                println!("ready");
                 return Poll::Ready(val);
             }
         }
-
-        //println!("pending {:?}", std::time::Instant::now());
 
         Poll::Pending
     }
 }
 
-struct Pool(Arc<SharedPool>);
+struct Pool(SharedPool);
 
 impl Pool {
-    async fn new() -> Self {
+    async fn new(num: usize) -> Self {
         let mut connections = Vec::new();
 
-        for _ in 0..4usize {
+        for _ in 0..num {
             connections.push(Lock::new(connect("user=postgres").await));
         }
 
-        Self(Arc::new(SharedPool { connections }))
+        println!("opened {} database connections", num);
+
+        Self(SharedPool { connections })
     }
 
     fn get(&self) -> GetConnectionFuture {
-        GetConnectionFuture {
-            pool: self.0.clone(),
-        }
+        GetConnectionFuture(self.0.clone())
     }
 }
 
@@ -124,7 +115,7 @@ struct State {
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
-    let pool = Pool::new().await;
+    let pool = Pool::new(16).await;
 
     let mut app = App::with_state(State { pool });
 
