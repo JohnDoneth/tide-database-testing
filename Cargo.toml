@@ -7,11 +7,9 @@ edition = "2018"
 [dependencies]
 futures-preview = "0.3.0-alpha.17"
 
-pretty_env_logger = "0.3"
+pretty_env_logger = "0.3.0"
 
-#hyper = { git = "https://github.com/hyperium/hyper.git" }
-
-tide = { git = "https://github.com/rustasync/tide.git" }
+hyper = { git = "https://github.com/hyperium/hyper.git" }
 
 serde = "1.0"
 serde_derive = "1.0"
@@ -20,6 +18,7 @@ serde_json = "1.0"
 tokio = { git = "https://github.com/tokio-rs/tokio" }
 tokio-fs = { git = "https://github.com/tokio-rs/tokio" }
 tokio-postgres = { git = "https://github.com/sfackler/rust-postgres.git", branch = "std-futures", features = ["runtime"] }
+parking_lot = "0.9.0"
 
 [patch.crates-io]
 http-service = { git = "https://github.com/rustasync/http-service.git" }

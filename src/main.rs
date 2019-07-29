@@ -1,8 +1,8 @@
 #![feature(async_await)]
-#![deny(warnings)]
+//#![deny(warnings)]
+#![feature(duration_float)]
 
 use serde::{Deserialize, Serialize};
-use tide::{response, App, Context, EndpointResult};
 
 use tokio::net::TcpStream;
 use tokio::sync::lock::{Lock, LockGuard};
@@ -13,44 +13,9 @@ use tokio_postgres::{Client, Config, Connection, Error};
 use std::pin::Pin;
 use std::time::Instant;
 
+use parking_lot::Mutex;
+
 use futures::{Future, FutureExt, Poll, StreamExt};
-
-#[derive(Serialize, Deserialize, Clone, Debug)]
-struct Message {
-    contents: String,
-}
-
-async fn get_json(cx: Context<State>) -> EndpointResult {
-    let cx = cx.state();
-
-    let mut result = {
-        let start = Instant::now();
-        let mut client = cx.pool.get().await;
-        println!("time elapsed waiting for lock: {:?}", start.elapsed());
-
-        //let start = Instant::now();
-        let select = client.prepare("SELECT now()::TEXT").await.unwrap();
-        //println!("time elapsed preparing query: {:?}", start.elapsed());
-
-        let res = client.query(&select, &[]).await.unwrap();
-
-        res
-    };
-
-    //let start = Instant::now();
-    let res = if let Some(Ok(next)) = result.next().await {
-        next.get::<_, &str>(0).to_string()
-    } else {
-        "failed to query".to_string()
-    };
-    //println!("elapsed waiting for query: {:?}", start.elapsed());
-
-    let message = Message { contents: res };
-
-    //println!("{:?}", message);
-
-    Ok(response::json(message))
-}
 
 async fn connect_raw(s: &str) -> Result<(Client, Connection<TcpStream, NoTlsStream>), Error> {
     let socket = TcpStream::connect(&"127.0.0.1:5433".parse().unwrap())
@@ -67,16 +32,21 @@ async fn connect(s: &str) -> Client {
     client
 }
 
+struct MyConnection {
+    client: Client,
+    cache: StatementCache,
+}
+
 #[derive(Clone)]
 struct SharedPool {
-    connections: Vec<Lock<Client>>,
+    connections: Vec<Lock<MyConnection>>,
 }
 
 #[derive(Clone)]
 struct GetConnectionFuture(SharedPool);
 
 impl Future for GetConnectionFuture {
-    type Output = LockGuard<Client>;
+    type Output = LockGuard<MyConnection>;
 
     fn poll(mut self: Pin<&mut Self>, cx: &mut std::task::Context) -> Poll<Self::Output> {
         for connection in self.0.connections.iter_mut() {
@@ -89,6 +59,7 @@ impl Future for GetConnectionFuture {
     }
 }
 
+#[derive(Clone)]
 struct Pool(SharedPool);
 
 impl Pool {
@@ -96,7 +67,12 @@ impl Pool {
         let mut connections = Vec::new();
 
         for _ in 0..num {
-            connections.push(Lock::new(connect("user=postgres").await));
+            let connection = connect("user=postgres").await;
+
+            connections.push(Lock::new(MyConnection {
+                client: connection,
+                cache: StatementCache::default(),
+            }));
         }
 
         println!("opened {} database connections", num);
@@ -109,19 +85,113 @@ impl Pool {
     }
 }
 
-struct State {
-    pool: Pool,
+use hyper::service::{make_service_fn, service_fn};
+use hyper::{header, Body, Method, Request, Response, Server, StatusCode};
+
+/*async fn api_get_response() -> Result<Response<Body>> {
+    let data = vec!["foo", "bar"];
+    let res = match serde_json::to_string(&data) {
+        Ok(json) => {
+            Response::builder()
+                .header(header::CONTENT_TYPE, "application/json")
+                .body(Body::from(json))
+                .unwrap()
+        }
+        Err(_) => {
+            Response::builder()
+                .status(StatusCode::INTERNAL_SERVER_ERROR)
+                .body(INTERNAL_SERVER_ERROR.into())
+                .unwrap()
+        }
+    };
+    Ok(res)
+}*/
+
+use std::collections::HashMap;
+use tokio_postgres::Statement;
+
+#[derive(Default)]
+struct StatementCache {
+    cache: HashMap<String, Statement>,
+}
+
+impl StatementCache {
+    fn insert(&mut self, query: &str, statement: Statement) {
+        self.cache.insert(query.to_string(), statement);
+    }
+
+    fn prepare(&mut self, query: &str) -> Option<Statement> {
+        if self.cache.contains_key(query) {
+            Some(self.cache[query].clone())
+        } else {
+            None
+        }
+    }
+}
+
+async fn hello(
+    _: Request<Body>,
+    connection: GetConnectionFuture,
+) -> Result<Response<Body>, hyper::Error> {
+    let mut result = {
+        let time = std::time::Instant::now();
+        let mut connection = connection.await;
+        println!("pool {:?}", time.elapsed());
+
+        let query = "SELECT now()::TEXT";
+
+        let statement = match connection.cache.prepare(query) {
+            Some(statement) => statement,
+            None => {
+                let statement = connection.client.prepare(query).await.unwrap();
+
+                connection.cache.insert(query, statement.clone());
+
+                statement
+            }
+        };
+
+        let time = std::time::Instant::now();
+        let res = connection.client.query(&statement, &[]).await.unwrap();
+        println!("query {:?}", time.elapsed());
+
+        res
+    };
+
+    let res = if let Some(Ok(next)) = result.next().await {
+        next.get::<_, &str>(0).to_string()
+    } else {
+        "failed to query".to_string()
+    };
+    Ok(Response::new(Body::from(res)))
 }
 
 #[tokio::main]
-async fn main() -> Result<(), Box<dyn std::error::Error>> {
-    let pool = Pool::new(16).await;
+async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+    pretty_env_logger::init();
 
-    let mut app = App::with_state(State { pool });
+    let pool = Pool::new(8).await;
 
-    app.at("/json").get(get_json);
+    let addr = "127.0.0.1:8000".parse().unwrap();
 
-    app.run("127.0.0.1:8000")?;
+    let server = Server::bind(&addr).serve(make_service_fn(move |_| {
+        let pool = pool.clone();
+
+        // This is the `Service` that will handle the connection.
+        // `service_fn` is a helper to convert a function that
+        // returns a Response into a `Service`.
+        async {
+            Ok::<_, hyper::Error>(service_fn(move |req| {
+                let connection = pool.get();
+
+                hello(req, connection)
+            }))
+        }
+    }));
+
+    println!("Listening on http://{}", addr);
+
+    server.await?;
 
     Ok(())
 }
