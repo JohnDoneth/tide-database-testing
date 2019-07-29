@@ -1,21 +1,20 @@
 #![feature(async_await)]
-//#![deny(warnings)]
+#![deny(warnings)]
 #![feature(duration_float)]
-
-use serde::{Deserialize, Serialize};
 
 use tokio::net::TcpStream;
 use tokio::sync::lock::{Lock, LockGuard};
 
 use tokio_postgres::tls::{NoTls, NoTlsStream};
-use tokio_postgres::{Client, Config, Connection, Error};
+use tokio_postgres::{Statement, Client, Config, Connection, Error};
 
 use std::pin::Pin;
-use std::time::Instant;
-
-use parking_lot::Mutex;
+use std::collections::HashMap;
 
 use futures::{Future, FutureExt, Poll, StreamExt};
+
+use hyper::service::{make_service_fn, service_fn};
+use hyper::{Body, Request, Response, Server};
 
 async fn connect_raw(s: &str) -> Result<(Client, Connection<TcpStream, NoTlsStream>), Error> {
     let socket = TcpStream::connect(&"127.0.0.1:5433".parse().unwrap())
@@ -85,31 +84,6 @@ impl Pool {
     }
 }
 
-use hyper::service::{make_service_fn, service_fn};
-use hyper::{header, Body, Method, Request, Response, Server, StatusCode};
-
-/*async fn api_get_response() -> Result<Response<Body>> {
-    let data = vec!["foo", "bar"];
-    let res = match serde_json::to_string(&data) {
-        Ok(json) => {
-            Response::builder()
-                .header(header::CONTENT_TYPE, "application/json")
-                .body(Body::from(json))
-                .unwrap()
-        }
-        Err(_) => {
-            Response::builder()
-                .status(StatusCode::INTERNAL_SERVER_ERROR)
-                .body(INTERNAL_SERVER_ERROR.into())
-                .unwrap()
-        }
-    };
-    Ok(res)
-}*/
-
-use std::collections::HashMap;
-use tokio_postgres::Statement;
-
 #[derive(Default)]
 struct StatementCache {
     cache: HashMap<String, Statement>,
@@ -134,9 +108,7 @@ async fn hello(
     connection: GetConnectionFuture,
 ) -> Result<Response<Body>, hyper::Error> {
     let mut result = {
-        let time = std::time::Instant::now();
         let mut connection = connection.await;
-        println!("pool {:?}", time.elapsed());
 
         let query = "SELECT now()::TEXT";
 
@@ -151,9 +123,7 @@ async fn hello(
             }
         };
 
-        let time = std::time::Instant::now();
         let res = connection.client.query(&statement, &[]).await.unwrap();
-        println!("query {:?}", time.elapsed());
 
         res
     };
