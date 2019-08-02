@@ -134,6 +134,8 @@ async fn hello(
     connection: GetConnectionFuture,
     log: Logger,
 ) -> Result<Response<Body>, hyper::Error> {
+    let now = std::time::Instant::now();
+
     let mut result = {
         let mut connection = connection.await;
 
@@ -162,7 +164,7 @@ async fn hello(
         "internal server error".to_string()
     };
 
-    slog_info!(log, "request complete");
+    slog_info!(log, "request complete"; "duration" => now.elapsed().as_secs_f32());
 
     Ok(Response::new(Body::from(res)))
 }
@@ -171,7 +173,7 @@ async fn hello(
 async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     let decorator = slog_term::TermDecorator::new().build();
     let drain = slog_term::FullFormat::new(decorator).build().fuse();
-    let drain = slog_async::Async::new(drain).chan_size(1000).build().fuse();
+    let drain = slog_async::Async::new(drain).overflow_strategy(slog_async::OverflowStrategy::Block).chan_size(1000).build().fuse();
 
     let log = slog::Logger::root(drain, o!());
     let _guard = slog_scope::set_global_logger(log.clone());
