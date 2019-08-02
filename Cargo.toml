@@ -19,6 +19,11 @@ tokio = { git = "https://github.com/tokio-rs/tokio" }
 tokio-fs = { git = "https://github.com/tokio-rs/tokio" }
 tokio-postgres = { git = "https://github.com/sfackler/rust-postgres.git", branch = "std-futures", features = ["runtime"] }
 parking_lot = "0.9.0"
+slog = "2.5.2"
+slog-async = "2.3.0"
+slog-term = "2.4.1"
+slog-scope = "4.1.2"
+uuid = { version = "0.7.4", features = ["serde", "v4"] }
 
 [patch.crates-io]
 http-service = { git = "https://github.com/rustasync/http-service.git" }
